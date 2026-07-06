@@ -5,7 +5,6 @@ const Sensibo = require('../lib/sensibo');
 const util = require('../lib/util');
 
 module.exports = class BaseDevice extends Homey.Device {
-
   async onInit() {
     await this.migrate();
     await this.createSensiboApi(this.log);
@@ -69,7 +68,7 @@ module.exports = class BaseDevice extends Homey.Device {
       this._acStateBatchTimeout = undefined;
     }
     this._acStateBatchTimeout = this.homey.setTimeout(() => {
-      this.flushAcStateBatch().catch((err) => this.log('flushAcStateBatch error', err));
+      this.flushAcStateBatch();
     }, this._acStateBatchWindowMs);
   }
 
@@ -111,7 +110,7 @@ module.exports = class BaseDevice extends Homey.Device {
       this.resolvePendingAcStateBatch(undefined, resolvers);
     } catch (err) {
       this.rejectPendingAcStateBatch(err, rejectors);
-      throw err;
+      this.log('flushAcStateBatch error', err);
     }
   }
 
@@ -860,5 +859,4 @@ module.exports = class BaseDevice extends Homey.Device {
       this.scheduleCheckData();
     }
   }
-
 };
