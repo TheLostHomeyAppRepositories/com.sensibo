@@ -106,10 +106,52 @@ module.exports = class BaseDevice extends Homey.Device {
     }
     try {
       await this._sensibo.setAcState(patch);
+      await this.ensureDeviceAvailable();
       this.resolvePendingAcStateBatch(undefined, resolvers);
     } catch (err) {
       this.log('flushAcStateBatch error', err);
+      await this.setUnavailableFromApiError(err);
       this.resolvePendingAcStateBatch(undefined, resolvers);
+    }
+  }
+
+  getApiFailureMessage(err) {
+    if (err && typeof err.apiMessage === 'string' && err.apiMessage.length > 0) {
+      return err.apiMessage;
+    }
+    if (err && typeof err.message === 'string' && err.message.length > 0) {
+      return err.message;
+    }
+    return 'Unknown API error';
+  }
+
+  isApiFailureError(err) {
+    return !!(err && (err.apiMessage || err.status || err.responseData));
+  }
+
+  async setUnavailableFromApiError(err) {
+    const message = this.getApiFailureMessage(err);
+    try {
+      await this.setUnavailable(message);
+    } catch (setUnavailableErr) {
+      this.log('setUnavailableFromApiError error', setUnavailableErr);
+    }
+  }
+
+  async handleApiFailure(context, err) {
+    await this.setUnavailableFromApiError(err);
+    const message = this.getApiFailureMessage(err);
+    this.log(`${context} error`, message);
+    throw message;
+  }
+
+  async ensureDeviceAvailable() {
+    try {
+      if (!this.getAvailable()) {
+        await this.setAvailable();
+      }
+    } catch (err) {
+      this.log('ensureDeviceAvailable error', err);
     }
   }
 
@@ -136,6 +178,9 @@ module.exports = class BaseDevice extends Homey.Device {
   async fetchRemoteCapabilities() {
     try {
       const data = await this._sensibo.getRemoteCapabilities();
+      if (data.status !== 200) {
+        throw this._sensibo.createApiError('fetching remote capabilities', data);
+      }
       if (data.data) {
         // Check if remoteMeasurements and filtersCleaning exist in data.data.result
         const remoteMeasurements = data.data.result.measurements ? { measurements: data.data.result.measurements } : {};
@@ -145,9 +190,11 @@ module.exports = class BaseDevice extends Homey.Device {
         this.log('fetchRemoteCapabilities', result);
         this._sensibo._remoteCapabilities = result;
         await this.onRemoteCapabilitiesReceived(result);
+        await this.ensureDeviceAvailable();
       }
     } catch (err) {
-      this.log('fetchRemoteCapabilities error', err);
+      await this.setUnavailableFromApiError(err);
+      this.log('fetchRemoteCapabilities error', this.getApiFailureMessage(err));
     }
   }
 
@@ -600,7 +647,14 @@ module.exports = class BaseDevice extends Homey.Device {
   }
 
   async isTimerEnabled() {
-    return this._sensibo.isTimerEnabled();
+    try {
+      const isEnabled = await this._sensibo.isTimerEnabled();
+      await this.ensureDeviceAvailable();
+      return isEnabled;
+    } catch (err) {
+      await this.setUnavailableFromApiError(err);
+      throw this.getApiFailureMessage(err);
+    }
   }
 
   async isLightOn() {
@@ -616,16 +670,12 @@ module.exports = class BaseDevice extends Homey.Device {
     try {
       this.clearCheckData();
       await this._sensibo.deleteCurrentTimer();
+      await this.ensureDeviceAvailable();
       this._hasTimer = false;
       this._hasTimerEnabled = false;
       this.homey.app._timerDeletedTrigger.trigger(this, { homey: true }, {});
     } catch (err) {
-      let message = err;
-      if (err.response.data.message !== undefined) {
-        message = err.response.data.message;
-      }
-      this.log('onDeleteTimer error', message);
-      throw message;
+      await this.handleApiFailure('onDeleteTimer', err);
     } finally {
       this.scheduleCheckData();
     }
@@ -651,14 +701,15 @@ module.exports = class BaseDevice extends Homey.Device {
         throw new Error('At least one parameter must be specified.');
       }
       await this._sensibo.setCurrentTimer(minutesFromNow, newAcState);
+      await this.ensureDeviceAvailable();
       this._hasTimer = true;
       this._hasTimerEnabled = true;
       this.homey.app._timerCreatedTrigger.trigger(this, { homey: true }, {});
     } catch (err) {
-      let message = err;
-      if (err.response.data.message !== undefined) {
-        message = err.response.data.message;
+      if (this.isApiFailureError(err)) {
+        await this.handleApiFailure('onSetTimer', err);
       }
+      const message = this.getApiFailureMessage(err);
       this.log('onSetTimer error', message);
       throw message;
     } finally {
@@ -707,13 +758,9 @@ module.exports = class BaseDevice extends Homey.Device {
       this.clearCheckData();
       this.log('onSyncPowerState', state);
       await this._sensibo.syncDeviceState(state === 'on');
+      await this.ensureDeviceAvailable();
     } catch (err) {
-      let message = err;
-      if (err.response.data.message !== undefined) {
-        message = err.response.data.message;
-      }
-      this.log('onSyncPowerState error', message);
-      throw message;
+      await this.handleApiFailure('onSyncPowerState', err);
     } finally {
       this.scheduleCheckData();
     }
@@ -830,13 +877,9 @@ module.exports = class BaseDevice extends Homey.Device {
       this.clearCheckData();
       this.log(`enable/disable Climate React: ${this._sensibo.getDeviceId()} -> ${value}`);
       await this._sensibo.enableClimateReact(value === 'on');
+      await this.ensureDeviceAvailable();
     } catch (err) {
-      let message = err;
-      if (err.response.data.message !== undefined) {
-        message = err.response.data.message;
-      }
-      this.log('onUpdateClimateReact error', message);
-      throw message;
+      await this.handleApiFailure('onUpdateClimateReact', err);
     } finally {
       this.scheduleCheckData();
     }
@@ -847,13 +890,9 @@ module.exports = class BaseDevice extends Homey.Device {
       this.clearCheckData();
       this.log(`enable/disable Pure Boost: ${this._sensibo.getDeviceId()} -> ${value}`);
       await this._sensibo.enablePureBoost(value === 'on');
+      await this.ensureDeviceAvailable();
     } catch (err) {
-      let message = err;
-      if (err.response.data.message !== undefined) {
-        message = err.response.data.message;
-      }
-      this.log('onUpdatePureBoost error', message);
-      throw message;
+      await this.handleApiFailure('onUpdatePureBoost', err);
     } finally {
       this.scheduleCheckData();
     }

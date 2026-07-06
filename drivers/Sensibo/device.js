@@ -97,13 +97,21 @@ module.exports = class SensiboDevice extends BaseDevice {
         this.log(`Fetching AC state for: ${this._sensibo.getDeviceId()}`);
         await randomDelay(1, 3);
         const acStatesData = await this._sensibo.getAcStates();
+        if (acStatesData.status !== 200) {
+          throw this._sensibo.createApiError('getting AC states', acStatesData);
+        }
         await this.onAcStatesReceived(acStatesData);
         await randomDelay(2, 10);
         const climateReactSettings = await this._sensibo.getClimateReactSettings();
+        if (climateReactSettings.status !== 200) {
+          throw this._sensibo.createApiError('getting Climate React settings', climateReactSettings);
+        }
         await this.onClimateReactSettingsReceived(climateReactSettings);
+        await this.ensureDeviceAvailable();
       }
     } catch (err) {
-      this.log('checkData device', err);
+      await this.setUnavailableFromApiError(err);
+      this.log('checkData device', this.getApiFailureMessage(err));
     } finally {
       this.scheduleCheckData();
     }
