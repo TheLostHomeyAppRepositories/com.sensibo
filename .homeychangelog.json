@@ -187,5 +187,8 @@
   },
   "1.21.0": {
     "en": "Multiple acState changes are now buffered and sent as one command to the API and device."
+  },
+  "1.22.0": {
+    "en": "Remove dependency to Axios http in favor node native fetch."
   }
 }
