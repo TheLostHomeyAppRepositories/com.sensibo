@@ -97,7 +97,6 @@ module.exports = class BaseDevice extends Homey.Device {
     }
     const patch = this._pendingAcStatePatch;
     const resolvers = this._acStateBatchResolvers;
-    const rejectors = this._acStateBatchRejectors;
     this._pendingAcStatePatch = {};
     this._acStateBatchResolvers = [];
     this._acStateBatchRejectors = [];
@@ -109,8 +108,8 @@ module.exports = class BaseDevice extends Homey.Device {
       await this._sensibo.setAcState(patch);
       this.resolvePendingAcStateBatch(undefined, resolvers);
     } catch (err) {
-      this.rejectPendingAcStateBatch(err, rejectors);
       this.log('flushAcStateBatch error', err);
+      this.resolvePendingAcStateBatch(undefined, resolvers);
     }
   }
 
