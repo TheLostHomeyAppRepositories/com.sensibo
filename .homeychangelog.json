@@ -190,5 +190,8 @@
   },
   "1.22.0": {
     "en": "Remove dependency to Axios http in favor node native fetch."
+  },
+  "1.22.1": {
+    "en": "Fix API call error hanlding"
   }
 }
