@@ -196,5 +196,8 @@
   },
   "1.22.2": {
     "en": "Validate acState before sending to API"
+  },
+  "1.22.4": {
+    "en": "Enchanced API error handling and oflline status"
   }
 }
