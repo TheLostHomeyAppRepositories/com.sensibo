@@ -184,5 +184,8 @@
   },
   "1.20.4": {
     "en": "Linting fixes"
+  },
+  "1.21.0": {
+    "en": "Multiple acState changes are now buffered and sent as one command to the API and device."
   }
 }
