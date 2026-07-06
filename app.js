@@ -169,7 +169,10 @@ class SensiboApp extends Homey.App {
   }
 
   async onDevicesDataReceived(data, devices) {
-    for (const resultItem of data.data.result) {
+    if (!data || !data.result) {
+      return;
+    }
+    for (const resultItem of data.result) {
       await this.onDeviceInfoReceived(resultItem, devices);
       if (resultItem.motionSensors) {
         for (const msResultItem of resultItem.motionSensors) {

@@ -97,15 +97,9 @@ module.exports = class SensiboDevice extends BaseDevice {
         this.log(`Fetching AC state for: ${this._sensibo.getDeviceId()}`);
         await randomDelay(1, 3);
         const acStatesData = await this._sensibo.getAcStates();
-        if (acStatesData.status !== 200) {
-          throw this._sensibo.createApiError('getting AC states', acStatesData);
-        }
         await this.onAcStatesReceived(acStatesData);
         await randomDelay(2, 10);
         const climateReactSettings = await this._sensibo.getClimateReactSettings();
-        if (climateReactSettings.status !== 200) {
-          throw this._sensibo.createApiError('getting Climate React settings', climateReactSettings);
-        }
         await this.onClimateReactSettingsReceived(climateReactSettings);
         await this.ensureDeviceAvailable();
       }
@@ -118,8 +112,8 @@ module.exports = class SensiboDevice extends BaseDevice {
   }
 
   async onAcStatesReceived(data) {
-    if (data.data) {
-      const curAcStates = data.data.result;
+    if (data && data.result) {
+      const curAcStates = data.result;
       this.log(
         `AC States for: ${this._sensibo.getDeviceId()}`,
         curAcStates.length,
@@ -129,8 +123,12 @@ module.exports = class SensiboDevice extends BaseDevice {
         for (const anAcState of curAcStates) {
           if (this._lastAcStatesIds[anAcState.id]) break;
           const fallbackTargetTemperature = this._sensibo.getAcState().targetTemperature;
-          const targetTemperature =
-            typeof anAcState.acState.targetTemperature === 'number' ? anAcState.acState.targetTemperature : typeof fallbackTargetTemperature === 'number' ? fallbackTargetTemperature : 0;
+          let targetTemperature = 0;
+          if (typeof anAcState.acState.targetTemperature === 'number') {
+            targetTemperature = anAcState.acState.targetTemperature;
+          } else if (typeof fallbackTargetTemperature === 'number') {
+            targetTemperature = fallbackTargetTemperature;
+          }
           const payload = {
             status: anAcState.status,
             reason: anAcState.reason,
@@ -155,8 +153,8 @@ module.exports = class SensiboDevice extends BaseDevice {
   }
 
   async onClimateReactSettingsReceived(data) {
-    if (data.data) {
-      const { result } = data.data;
+    if (data && data.result) {
+      const { result } = data;
       if (result.enabled !== undefined) {
         this.log(`Climate React settings for: ${this._sensibo.getDeviceId()}: enabled: ${result.enabled}`);
         await this.updateIfChanged('se_climate_react', result.enabled ? 'on' : 'off');

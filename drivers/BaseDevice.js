@@ -68,11 +68,13 @@ module.exports = class BaseDevice extends Homey.Device {
       this._acStateBatchTimeout = undefined;
     }
     this._acStateBatchTimeout = this.homey.setTimeout(() => {
-      this.flushAcStateBatch();
+      this.flushAcStateBatch().catch((err) => {
+        this.log('scheduleAcStateBatchFlush error', err);
+      });
     }, this._acStateBatchWindowMs);
   }
 
-  async queueAcStatePatch(patch) {
+  queueAcStatePatch(patch) {
     if (this._deleted) {
       throw new Error('Device deleted');
     }
@@ -178,15 +180,11 @@ module.exports = class BaseDevice extends Homey.Device {
   async fetchRemoteCapabilities() {
     try {
       const data = await this._sensibo.getRemoteCapabilities();
-      if (data.status !== 200) {
-        throw this._sensibo.createApiError('fetching remote capabilities', data);
-      }
-      if (data.data) {
-        // Check if remoteMeasurements and filtersCleaning exist in data.data.result
-        const remoteMeasurements = data.data.result.measurements ? { measurements: data.data.result.measurements } : {};
-        const filtersCleaning = data.data.result.filtersCleaning ? { filtersCleaning: data.data.result.filtersCleaning } : {};
+      if (data && data.result) {
+        const remoteMeasurements = data.result.measurements ? { measurements: data.result.measurements } : {};
+        const filtersCleaning = data.result.filtersCleaning ? { filtersCleaning: data.result.filtersCleaning } : {};
 
-        const result = { ...data.data.result.remoteCapabilities, ...remoteMeasurements, ...filtersCleaning };
+        const result = { ...data.result.remoteCapabilities, ...remoteMeasurements, ...filtersCleaning };
         this.log('fetchRemoteCapabilities', result);
         this._sensibo._remoteCapabilities = result;
         await this.onRemoteCapabilitiesReceived(result);
