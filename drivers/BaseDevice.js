@@ -9,6 +9,7 @@ module.exports = class BaseDevice extends Homey.Device {
   async onInit() {
     await this.migrate();
     await this.createSensiboApi(this.log);
+    this.initAcStateBatching();
     await this.registerCapabilityListeners();
     await this.fetchRemoteCapabilities();
     this.log(`${this.deviceName()} device initialized`);
@@ -18,7 +19,100 @@ module.exports = class BaseDevice extends Homey.Device {
 
   async onUninit() {
     this._deleted = true;
+    this.clearAcStateBatch();
     this.clearCheckData();
+  }
+
+  initAcStateBatching() {
+    this._acStateBatchWindowMs = 500;
+    this._pendingAcStatePatch = {};
+    this._acStateBatchTimeout = undefined;
+    this._acStateBatchResolvers = [];
+    this._acStateBatchRejectors = [];
+  }
+
+  clearAcStateBatch() {
+    if (this._acStateBatchTimeout) {
+      this.homey.clearTimeout(this._acStateBatchTimeout);
+      this._acStateBatchTimeout = undefined;
+    }
+    this._pendingAcStatePatch = {};
+    this.rejectPendingAcStateBatch(new Error('Device uninitialized before batched acState flush'));
+  }
+
+  createAcStateBatchPromise() {
+    return new Promise((resolve, reject) => {
+      this._acStateBatchResolvers.push(resolve);
+      this._acStateBatchRejectors.push(reject);
+    });
+  }
+
+  resolvePendingAcStateBatch(value, resolvers = this._acStateBatchResolvers) {
+    this._acStateBatchResolvers = [];
+    this._acStateBatchRejectors = [];
+    for (const resolve of resolvers) {
+      resolve(value);
+    }
+  }
+
+  rejectPendingAcStateBatch(err, rejectors = this._acStateBatchRejectors) {
+    this._acStateBatchResolvers = [];
+    this._acStateBatchRejectors = [];
+    for (const reject of rejectors) {
+      reject(err);
+    }
+  }
+
+  scheduleAcStateBatchFlush() {
+    if (this._acStateBatchTimeout) {
+      this.homey.clearTimeout(this._acStateBatchTimeout);
+      this._acStateBatchTimeout = undefined;
+    }
+    this._acStateBatchTimeout = this.homey.setTimeout(() => {
+      this.flushAcStateBatch().catch((err) => this.log('flushAcStateBatch error', err));
+    }, this._acStateBatchWindowMs);
+  }
+
+  async queueAcStatePatch(patch) {
+    if (this._deleted) {
+      throw new Error('Device deleted');
+    }
+    // Keep local state in sync with queued updates so subsequent validations use the effective pending state.
+    this._sensibo.updateAcState(patch);
+    this._pendingAcStatePatch = { ...this._pendingAcStatePatch, ...patch };
+    const batchPromise = this.createAcStateBatchPromise();
+    // Attach a no-op rejection handler so fire-and-forget callers do not create unhandled rejections.
+    batchPromise.catch(() => {});
+    this.scheduleAcStateBatchFlush();
+    return batchPromise;
+  }
+
+  async flushAcStateBatch() {
+    if (this._deleted) {
+      this.clearAcStateBatch();
+      return;
+    }
+    if (this._acStateBatchTimeout) {
+      this.homey.clearTimeout(this._acStateBatchTimeout);
+      this._acStateBatchTimeout = undefined;
+    }
+    const patch = this._pendingAcStatePatch;
+    const resolvers = this._acStateBatchResolvers;
+    const rejectors = this._acStateBatchRejectors;
+    this._pendingAcStatePatch = {};
+    this._acStateBatchResolvers = [];
+    this._acStateBatchRejectors = [];
+    if (Object.keys(patch).length === 0) {
+      this.resolvePendingAcStateBatch(undefined, resolvers);
+      return;
+    }
+    try {
+      await this._sensibo.setAcState(patch);
+      this.resolvePendingAcStateBatch(undefined, resolvers);
+    } catch (err) {
+      this.rejectPendingAcStateBatch(err, rejectors);
+      throw err;
+    }
   }
 
   async migrate() {}
@@ -66,10 +160,7 @@ module.exports = class BaseDevice extends Homey.Device {
       // Modes reported by the remote device
       const remoteModes = util.getModes(capabilities) || [];
 
-      const availableModes = [
-        ...defaultModes,
-        ...remoteModes.filter((mode) => !defaultModes.includes(mode))
-      ];
+      const availableModes = [...defaultModes, ...remoteModes.filter((mode) => !defaultModes.includes(mode))];
 
       // Fetch current options (may throw if not set yet, so wrap safely)
       let currentOptions;
@@ -80,7 +171,12 @@ module.exports = class BaseDevice extends Homey.Device {
       }
 
       // Update only if there are changes on thermostat_mode modes
-      if (!util.arraysEqualIgnoreOrder(availableModes, currentOptions.values.map((option) => option.id))) {
+      if (
+        !util.arraysEqualIgnoreOrder(
+          availableModes,
+          currentOptions.values.map((option) => option.id)
+        )
+      ) {
         const newOptions = {
           values: availableModes.map((mode) => ({
             id: mode,
@@ -122,6 +218,7 @@ module.exports = class BaseDevice extends Homey.Device {
 
   onDeleted() {
     this._deleted = true;
+    this.clearAcStateBatch();
     this.clearCheckData();
     this.clearTimer();
     this.log(`${this.deviceName()} deleted`);
@@ -338,7 +435,7 @@ module.exports = class BaseDevice extends Homey.Device {
     try {
       this.clearCheckData();
       this.log(`turn on: ${this._sensibo.getDeviceId()}`);
-      await this._sensibo.setAcState({ on: true });
+      this.queueAcStatePatch({ on: true });
       await this.setCapabilityValue('se_onoff', true).catch((err) => this.log(err));
       if (this.hasCapability('thermostat_mode')) {
         let mode = this._sensibo.getAcState()['mode'];
@@ -363,7 +460,7 @@ module.exports = class BaseDevice extends Homey.Device {
     try {
       this.clearCheckData();
       this.log(`turn off: ${this._sensibo.getDeviceId()}`);
-      await this._sensibo.setAcState({ on: false });
+      this.queueAcStatePatch({ on: false });
       await this.setCapabilityValue('se_onoff', false).catch((err) => this.log(err));
       if (this.hasCapability('thermostat_mode')) {
         await this.setCapabilityValue('thermostat_mode', 'off').catch((err) => this.log(err));
@@ -387,7 +484,7 @@ module.exports = class BaseDevice extends Homey.Device {
       this.clearCheckData();
       if (this._sensibo.checkMode(mode)) {
         this.log(`set fan mode: ${this._sensibo.getDeviceId()} -> ${mode}`);
-        await this._sensibo.setAcState({ mode });
+        this.queueAcStatePatch({ mode });
         this.log(`set fan mode OK: ${this._sensibo.getDeviceId()} -> ${mode}`);
       }
     } catch (err) {
@@ -575,7 +672,7 @@ module.exports = class BaseDevice extends Homey.Device {
     try {
       this.clearCheckData();
       this.log(`set light: ${this._sensibo.getDeviceId()} -> ${state}`);
-      await this._sensibo.setAcState({ light: state });
+      this.queueAcStatePatch({ light: state });
       this.log(`set light OK: ${this._sensibo.getDeviceId()} -> ${state}`);
     } catch (err) {
       let message = err;
@@ -628,7 +725,7 @@ module.exports = class BaseDevice extends Homey.Device {
     try {
       this.clearCheckData();
       this.log(`set target temperature: ${this._sensibo.getDeviceId()} -> ${value}`);
-      await this._sensibo.setAcState({ targetTemperature: value });
+      this.queueAcStatePatch({ targetTemperature: value });
       this.log(`set target temperature OK: ${this._sensibo.getDeviceId()} -> ${value}`);
     } catch (err) {
       let message = err;
@@ -648,11 +745,11 @@ module.exports = class BaseDevice extends Homey.Device {
       if (value === 'off' || this._sensibo.checkMode(value)) {
         this.log(`set thermostat mode: ${this._sensibo.getDeviceId()} -> ${value}`);
         if (value === 'off') {
-          await this._sensibo.setAcState({ on: false });
+          this.queueAcStatePatch({ on: false });
           await this.setCapabilityValue('se_onoff', false).catch((err) => this.log(err));
           this.homey.app._turnedOffTrigger.trigger(this, { state: 0 }, {});
         } else {
-          await this._sensibo.setAcState({ on: true, mode: value });
+          this.queueAcStatePatch({ on: true, mode: value });
           await this.setCapabilityValue('se_onoff', true).catch((err) => this.log(err));
           this.homey.app._turnedOnTrigger.trigger(this, { state: 1 }, {});
         }
@@ -675,7 +772,7 @@ module.exports = class BaseDevice extends Homey.Device {
       this.clearCheckData();
       if (this._sensibo.checkFanLevel(value)) {
         this.log(`set fan level: ${this._sensibo.getDeviceId()} -> ${value}`);
-        await this._sensibo.setAcState({ fanLevel: value });
+        this.queueAcStatePatch({ fanLevel: value });
         this.log(`set fan level OK: ${this._sensibo.getDeviceId()} -> ${value}`);
       }
     } catch (err) {
@@ -695,7 +792,7 @@ module.exports = class BaseDevice extends Homey.Device {
       this.clearCheckData();
       if (this._sensibo.checkSwingMode(value)) {
         this.log(`set swing: ${this._sensibo.getDeviceId()} -> ${value}`);
-        await this._sensibo.setAcState({ swing: value });
+        this.queueAcStatePatch({ swing: value });
         this.log(`set swing OK: ${this._sensibo.getDeviceId()} -> ${value}`);
       }
     } catch (err) {
@@ -715,7 +812,7 @@ module.exports = class BaseDevice extends Homey.Device {
       this.clearCheckData();
       if (this._sensibo.checkHorizontalSwingMode(value)) {
         this.log(`set horizontal swing: ${this._sensibo.getDeviceId()} -> ${value}`);
-        await this._sensibo.setAcState({ horizontalSwing: value });
+        this.queueAcStatePatch({ horizontalSwing: value });
         this.log(`set horizontal swing OK: ${this._sensibo.getDeviceId()} -> ${value}`);
       }
     } catch (err) {
@@ -763,4 +860,5 @@ module.exports = class BaseDevice extends Homey.Device {
       this.scheduleCheckData();
     }
   }
+
 };
